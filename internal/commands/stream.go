@@ -1,3 +1,6 @@
+// package commands
+// stream.go - Modificado para usar HOST interno y HOST público (Cloudflare)
+
 package commands
 
 import (
@@ -90,6 +93,7 @@ func sendLink(ctx *ext.Context, u *ext.Update) error {
 		ctx.Reply(u, ext.ReplyTextString(fmt.Sprintf("Error - %s", err.Error())), nil)
 		return dispatcher.EndGroups
 	}
+
 	fullHash := utils.PackFile(
 		file.FileName,
 		file.FileSize,
@@ -97,26 +101,59 @@ func sendLink(ctx *ext.Context, u *ext.Update) error {
 		file.ID,
 	)
 	hash := utils.GetShortHash(fullHash)
-	link := fmt.Sprintf("%s/stream/%d?hash=%s", config.ValueOf.Host, messageID, hash)
-	text := styling.Code(link)
+
+	// ── HOST interno: lo usa el bot para construir el path
+	//    Ejemplo: http://127.0.0.1:8080
+	internalHost := config.ValueOf.Host
+
+	// ── HOST público: lo ven los usuarios (Cloudflare Worker)
+	//    Ejemplo: https://tu-worker.workers.dev
+	//    Si no está configurado, usa el interno como fallback
+	publicHost := config.ValueOf.PublicHost
+	if publicHost == "" {
+		publicHost = internalHost
+	}
+
+	// Path del stream (igual para ambos)
+	streamPath := fmt.Sprintf("/stream/%d?hash=%s", messageID, hash)
+
+	// Link interno: usado por el bot para verificar/procesar
+	// (no se muestra al usuario)
+	_ = fmt.Sprintf("%s%s", internalHost, streamPath)
+
+	// Link público: lo que ven los usuarios
+	publicLink := fmt.Sprintf("%s%s", publicHost, streamPath)
+
+	// Texto que se muestra: solo el link de Cloudflare
+	text := styling.Code(publicLink)
+
+	// Botones con links públicos
 	row := tg.KeyboardButtonRow{
 		Buttons: []tg.KeyboardButtonClass{
 			&tg.KeyboardButtonURL{
-				Text: "Download",
-				URL:  link + "&d=true",
+				Text: "⬇️ Download",
+				URL:  publicLink + "&d=true",
 			},
 		},
 	}
-	if strings.Contains(file.MimeType, "video") || strings.Contains(file.MimeType, "audio") || strings.Contains(file.MimeType, "pdf") {
+
+	// Botón de stream para video/audio/pdf
+	if strings.Contains(file.MimeType, "video") ||
+		strings.Contains(file.MimeType, "audio") ||
+		strings.Contains(file.MimeType, "pdf") {
 		row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
-			Text: "Stream",
-			URL:  link,
+			Text: "▶️ Stream",
+			URL:  publicLink,
 		})
 	}
+
 	markup := &tg.ReplyInlineMarkup{
 		Rows: []tg.KeyboardButtonRow{row},
 	}
-	if strings.Contains(link, "http://localhost") {
+
+	// Si es localhost no mostrar botones (modo desarrollo)
+	if strings.Contains(publicLink, "localhost") ||
+		strings.Contains(publicLink, "127.0.0.1") {
 		_, err = ctx.Reply(u, ext.ReplyTextStyledText(text), &ext.ReplyOpts{
 			NoWebpage:        false,
 			ReplyToMessageId: u.EffectiveMessage.ID,
@@ -128,9 +165,11 @@ func sendLink(ctx *ext.Context, u *ext.Update) error {
 			ReplyToMessageId: u.EffectiveMessage.ID,
 		})
 	}
+
 	if err != nil {
 		utils.Logger.Sugar().Error(err)
 		ctx.Reply(u, ext.ReplyTextString(fmt.Sprintf("Error - %s", err.Error())), nil)
 	}
+
 	return dispatcher.EndGroups
 }
