@@ -44,7 +44,16 @@ type config struct {
 	LogChannelID   int64        `envconfig:"LOG_CHANNEL" required:"true"`
 	Dev            bool         `envconfig:"DEV" default:"false"`
 	Port           int          `envconfig:"PORT" default:"8080"`
+
+	// HOST interno: donde el bot escucha (nunca se muestra al usuario)
+	// Ejemplo: http://127.0.0.1:8080
 	Host           string       `envconfig:"HOST" default:""`
+
+	// HOST público: URL de Cloudflare Worker (lo ven los usuarios)
+	// Ejemplo: https://tu-worker.workers.dev
+	// Si está vacío, usa Host como fallback
+	PublicHost     string       `envconfig:"PUBLIC_HOST" default:""`
+
 	HashLength     int          `envconfig:"HASH_LENGTH" default:"6"`
 	UseSessionFile bool         `envconfig:"USE_SESSION_FILE" default:"true"`
 	UserSession    string       `envconfig:"USER_SESSION"`
@@ -84,7 +93,8 @@ func SetFlagsFromConfig(cmd *cobra.Command) {
 	cmd.Flags().Int64("log-channel", ValueOf.LogChannelID, "Telegram Log Channel ID")
 	cmd.Flags().Bool("dev", ValueOf.Dev, "Enable development mode")
 	cmd.Flags().IntP("port", "p", ValueOf.Port, "Server port")
-	cmd.Flags().String("host", ValueOf.Host, "Server host that will be included in links")
+	cmd.Flags().String("host", ValueOf.Host, "Internal host (never shown to users)")
+	cmd.Flags().String("public-host", ValueOf.PublicHost, "Public host shown to users (Cloudflare Worker URL)")
 	cmd.Flags().Int("hash-length", ValueOf.HashLength, "Hash length in links")
 	cmd.Flags().Bool("use-session-file", ValueOf.UseSessionFile, "Use session files")
 	cmd.Flags().String("user-session", ValueOf.UserSession, "Pyrogram user session")
@@ -125,6 +135,13 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 	if host != "" {
 		os.Setenv("HOST", host)
 	}
+
+	// ── Nuevo: PUBLIC_HOST desde args
+	publicHost, _ := cmd.Flags().GetString("public-host")
+	if publicHost != "" {
+		os.Setenv("PUBLIC_HOST", publicHost)
+	}
+
 	hashLength, _ := cmd.Flags().GetInt("hash-length")
 	if hashLength != 0 {
 		os.Setenv("HASH_LENGTH", strconv.Itoa(hashLength))
@@ -144,7 +161,6 @@ func (c *config) loadConfigFromArgs(log *zap.Logger, cmd *cobra.Command) {
 	multiTokens, _ := cmd.Flags().GetString("multi-token-txt-file")
 	if multiTokens != "" {
 		os.Setenv("MULTI_TOKEN_TXT_FILE", multiTokens)
-		// TODO: Add support for importing tokens from a separate file
 	}
 	streamConcurrency, _ := cmd.Flags().GetInt("stream-concurrency")
 	if streamConcurrency != 0 {
@@ -171,24 +187,38 @@ func (c *config) setupEnvVars(log *zap.Logger, cmd *cobra.Command) {
 	if err != nil {
 		log.Fatal("Error while parsing env variables", zap.Error(err))
 	}
+
 	var ipBlocked bool
 	ip, err := getIP(c.UsePublicIP)
 	if err != nil {
 		log.Error("Error while getting IP", zap.Error(err))
 		ipBlocked = true
 	}
+
+	// ── Configurar HOST interno
 	if c.Host == "" {
 		c.Host = "http://" + ip + ":" + strconv.Itoa(c.Port)
 		if c.UsePublicIP {
 			if ipBlocked {
 				log.Sugar().Warn("Can't get public IP, using local IP")
 			} else {
-				log.Sugar().Warn("You are using a public IP, please be aware of the security risks while exposing your IP to the internet.")
+				log.Sugar().Warn("You are using a public IP, please be aware of the security risks.")
 				log.Sugar().Warn("Use 'HOST' variable to set a domain name")
 			}
 		}
 		log.Sugar().Info("HOST not set, automatically set to " + c.Host)
 	}
+
+	// ── Configurar PUBLIC_HOST
+	// Si no está configurado, usa HOST como fallback
+	if c.PublicHost == "" {
+		c.PublicHost = c.Host
+		log.Sugar().Info("PUBLIC_HOST not set, using HOST as fallback: " + c.PublicHost)
+	} else {
+		log.Sugar().Info("PUBLIC_HOST (shown to users): " + c.PublicHost)
+		log.Sugar().Info("HOST (internal only):         " + c.Host)
+	}
+
 	val := reflect.ValueOf(c).Elem()
 	for _, env := range os.Environ() {
 		if strings.HasPrefix(env, "MULTI_TOKEN") {
@@ -250,7 +280,6 @@ func getIP(public bool) (string, error) {
 	return ip, nil
 }
 
-// https://stackoverflow.com/a/23558495/15807350
 func getInternalIP() (string, error) {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
